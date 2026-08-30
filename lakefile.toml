@@ -1,0 +1,35 @@
+name = "hex-number-field"
+defaultTargets = ["HexNumberField"]
+
+leanOptions = [
+  { name = "doc.verso", value = true },
+  { name = "doc.verso.suggestions", value = false },
+]
+
+[[require]]
+name = "HexRoots"
+git = "https://github.com/leanprover/hex-roots.git"
+rev = "6ca70dbba33ede456e3e25c0faad5f0f875346e7"
+
+[[require]]
+name = "HexRowReduce"
+git = "https://github.com/leanprover/hex-row-reduce.git"
+rev = "1edfb6581a6f076170516da619cbe972fc9bc51a"
+
+[[require]]
+name = "HexResultant"
+git = "https://github.com/leanprover/hex-resultant.git"
+rev = "6e7f884c7ee352c7682baad90d0d0b312cdadd21"
+
+[[require]]
+name = "HexBerlekampZassenhaus"
+git = "https://github.com/leanprover/hex-berlekamp-zassenhaus.git"
+rev = "d722c2174a7af8bf3a21eab2e671b82e76b03183"
+
+[[require]]
+name = "batteries"
+git = "https://github.com/leanprover-community/batteries"
+rev = "d54dddc581e08be364c278052863524bff7a99a9"
+
+[[lean_lib]]
+name = "HexNumberField"
