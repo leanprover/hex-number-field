@@ -103,6 +103,10 @@ inductive RootSet where
 /-- A polynomial with canonical algebraic coefficients. The constructor trims
     trailing coefficients using semantic `AlgebraicNumber.isZero`. -/
 opaque AlgebraicPoly
+def AlgebraicPolyNormalized (coeffs : Array AlgebraicNumber) : Prop
+def AlgebraicPoly.data (f : AlgebraicPoly) : Array AlgebraicNumber
+def AlgebraicPoly.normalized (f : AlgebraicPoly) :
+    AlgebraicPolyNormalized f.data
 def AlgebraicPoly.ofArray (coeffs : Array AlgebraicNumber) : AlgebraicPoly
 def AlgebraicPoly.coeffs (f : AlgebraicPoly) : Array AlgebraicNumber
 def AlgebraicPoly.coeff (f : AlgebraicPoly) (n : Nat) : AlgebraicNumber
@@ -145,11 +149,11 @@ of represented complex values. `AlgebraicPoly` owns the required semantic
 trimming without exporting an unjustified `DecidableEq`. That Boolean
 operation is `AlgebraicPoly.beq` (with its `BEq` instance): coefficientwise
 canonical equality over the trimmed data. Its faithfulness on canonical
-coefficients follows from the companion's `LawfulBEq AlgebraicNumber`
-plus trimming; packaging that as an `AlgebraicPoly.beq_iff` is Phase-6
-work (#9418). `coeff n` is the canonical
-coefficient (`0` beyond the degree) and `size` is the trimmed length backing
-`degree?`; all three are exercised by the module's compiled regressions.
+coefficients is the companion theorem `AlgebraicPoly.beq_iff`, which equates
+Boolean equality with equality of the semantic polynomial interpretations and
+is derived from `LawfulBEq AlgebraicNumber` plus trimming. `coeff n` is the
+canonical coefficient (`0` beyond the degree) and `size` is the trimmed length
+backing `degree?`; all three are exercised by the module's compiled regressions.
 
 ## Equality and zero
 
@@ -159,11 +163,17 @@ compare refined isolations with `sameRoot`.
 `AlgebraicRoot` uses two paths:
 
 1. If the stored polynomials agree, compare the refined isolations directly.
-2. Otherwise exactify both roots and use canonical `AlgebraicNumber` equality.
+2. Otherwise compute `gcd a.p b.p` over `ℚ`. If it is constant, the roots
+   cannot agree and comparison returns false without exactifying. If it is
+   nonconstant, exactify both roots and use canonical `AlgebraicNumber`
+   equality.
 
-The second path can factor twice and is not a fast arithmetic primitive. A future
-optimization may compare `gcd a.p b.p` and the two isolations without computing
-minimal polynomials, but it does not change the v1 semantics.
+The nonconstant-gcd fallback can factor twice and is not a fast arithmetic
+primitive. The gcd guard prevents repeated factorization for coprime
+enclosing polynomials during cross-component root merging without changing
+the semantics. It is a discriminator, not a constant-time operation:
+computing a rational gcd between two high-degree enclosing polynomials can
+itself incur coefficient growth.
 
 ```lean
 def AlgebraicNumber.isZero (a : AlgebraicNumber) : Bool := a.p == X
@@ -183,7 +193,8 @@ delegating to the generic exact `DyadicSquare.discContains` geometry primitive.
 `QAdjoin p x` retains canonical reduced rational coordinates. Addition,
 subtraction, negation, multiplication modulo `p`, and rational scalar actions do
 not require irreducibility. Inversion requires
-`[ZPoly.CheckedIrreducible p]` and uses polynomial extended gcd over `ℚ`.
+`[ZPoly.CheckedIrreducible p]` and uses a monic-normalized polynomial extended
+gcd over `ℚ` to control rational coefficient growth.
 The computational API supplies `Inv` and `Div`, with `0⁻¹ = 0`; the companion
 proves their field laws after converting the checked certificate to semantic
 irreducibility.
@@ -235,7 +246,13 @@ def AlgebraicRoot.exact? (a : AlgebraicRoot) : Option AlgebraicNumber
 /-- Primary total API. -/
 def AlgebraicRoot.exact (a : AlgebraicRoot) : AlgebraicNumber :=
   a.exact?.getD (panicWith 0 "AlgebraicRoot.exact: certification failed")
+
+def AlgebraicRoot.ofEliminant? (raw : ZPoly)
+    (ballAt : Int → Option DyadicComplexBall) : Option AlgebraicRoot
 ```
+
+`AlgebraicRoot.ofEliminant?` returns `none` unless normalization, root
+isolation, and the supplied operation ball identify one unique root.
 
 `QAdjoin.toAlgebraicNumber?` materializes `1, a, a², ...` once with one
 fixed-field multiplication per new power, finds the first Krylov dependence by
@@ -365,9 +382,15 @@ For `QAdjoin.roots?`:
    resultant with `p`. It is nonzero because coefficients are reduced modulo the
    irreducible `p`.
 3. Normalize and isolate the eliminant's roots.
-4. Reject candidates belonging only to other embeddings of `QAdjoin p x` by
-   evaluating the original component at the candidate and the selected `x`.
-   Refute wrong candidates at `evalDisambiguationPrec`.
+4. For each component, build one shared integer evaluation eliminant
+   `q(S) = Res_y(p(y), Res_z(e(z), S - G(y,z)))`, where `e` is the
+   squarefree norm eliminant and `G` is the denominator-cleared component.
+   Dilate `q` by the common denominator so its roots are the original
+   component evaluations. The eliminant is nonzero and contains the true
+   evaluation at every candidate. Reject candidates belonging only to other
+   embeddings of `QAdjoin p x` by evaluating the original component at the
+   candidate and the selected `x`; refute wrong candidates at
+   `evalDisambiguationPrec`.
 5. Return the surviving `AlgebraicRoot` values with the Yun multiplicity.
 
 `AlgebraicPoly.roots?` first embeds all nonzero coefficients into one computed
@@ -376,11 +399,18 @@ construction is deterministic and bounded, is not used for binary arithmetic,
 and is a public surface in its own right (the tower library builds on it); its
 contract is the next section.
 
-For a candidate evaluation, construct its integer eliminant `q`, remove its
-maximal `X` power, and take the primitive part. If the evaluation is nonzero,
-`q(0) ≠ 0` and the reciprocal Cauchy bound gives
+For each candidate, reuse the component's shared evaluation eliminant `q`,
+remove its maximal `X` power, and take the primitive part. If the evaluation
+is nonzero, `q(0) ≠ 0` and the reciprocal Cauchy bound gives
 `|value| ≥ 1 / (1 + height(q))`. Let `C` be the explicit Horner error majorant
 computed from the input coefficient heights, degrees, and Cauchy root bounds.
+The generic cross-library recurrence is public:
+
+```lean
+def Disambiguation.evalMajorant {A : Type} [Zero A] [DecidableEq A]
+    (f : DensePoly A) (valueBound : A → Nat) (q : ZPoly) : Nat
+```
+
 Define `evalDisambiguationPrec` as the least precision in the finite range
 
 ```text
@@ -394,6 +424,61 @@ centre norm. The displayed search endpoint still has sufficient slack.
 The displayed endpoint proves that the bounded search succeeds. The same
 construction, with the eliminant for each generator/factor evaluation, is used
 by tower adjoining. No API performs unbounded refinement.
+
+## Roots of integer polynomials
+
+```lean
+def AlgebraicRoot.ofRefined (q : ZPoly) (prim : ZPoly.content q = 1)
+    (pos_lc : 0 < q.leadingCoeff) (pos_degree : 0 < q.degree?.getD 0)
+    (squarefree : HasOnlySimpleRoots q) (rep : RefinedIsolation q) :
+    AlgebraicRoot
+def ZPoly.algebraicRoots? (p : ZPoly) : Option (Array AlgebraicNumber)
+def ZPoly.algebraicRoots  (p : ZPoly) : Array AlgebraicNumber
+
+def DyadicSquare.meetsRealAxis (s : DyadicSquare) : Bool
+def AlgebraicRoot.isReal (a : AlgebraicRoot) : Bool
+def AlgebraicNumber.isReal (a : AlgebraicNumber) : Bool
+def AlgebraicNumber.rootLe (a b : AlgebraicNumber) : Bool
+def AlgebraicNumber.approx (a : AlgebraicNumber) (prec : Int := 64) :
+    DyadicComplexBall
+instance : Repr AlgebraicNumber
+```
+
+`algebraicRoots p` is every distinct complex root of `p` in canonical form.
+It takes the squarefree primitive part of `p`, isolates all of its roots with
+the fixed default strategy at `separationDepth`, builds one lazy
+`AlgebraicRoot` per isolation with `AlgebraicRoot.ofRefined`, and exactifies
+each. Multiplicities are not
+returned; `AlgebraicPoly.roots` on the cast polynomial supplies them. A
+constant, including zero, returns the empty array, and the correspondence
+theorem is stated for nonzero `p`, matching `Polynomial.roots 0 = 0`. `none`
+is reserved for certificate failure, and `algebraicRoots?_isSome` retires it.
+
+The array is sorted by `AlgebraicNumber.rootLe`: real roots first, in
+increasing order, then the nonreal roots ordered by isolation centre (real
+part, then imaginary part, then precision). The order of the real roots is a
+theorem about the values. The order among nonreal roots is deterministic,
+because isolation is deterministic, but it is not determined by the roots
+alone and no client may rely on it beyond determinism.
+
+`meetsRealAxis` tests whether the closed circumscribed disc meets the real
+axis, with the disc radius rounded up to the dyadic `radiusHi`: the centre's
+imaginary part is at most `radiusHi` in absolute value. At separation
+precision this is exact for a stored isolation: a real root lies in the
+closed disc, so its centre is within the true radius, which is below
+`radiusHi`, of the axis; a nonreal root and its conjugate are distinct roots
+of the same integer polynomial, so `radiusHi` itself is less than a quarter
+of their distance `2 |im z|` (the separation bound carries the `1449/1024`
+slack), and the centre is more than `radiusHi` from the axis. `isReal`
+applies it to the stored representative; the companion proves `isReal_iff`.
+
+`approx a prec` is `QAdjoin.approx` applied to `a.toQAdjoin` with the stored
+representative; its ball contains `a.toComplex` and has radius at most
+`2^(-prec)`. The `Repr` instance prints the minimal polynomial and the ball
+centre truncated to twelve decimal places (real part only when `isReal`); it
+is for display and carries no contract beyond `approx`. Its two helpers,
+`AlgebraicNumber.Display.decimal` and `AlgebraicNumber.Display.polynomial`,
+are public only because the instance is, and carry no contract either.
 
 ## Common-field construction
 
@@ -443,11 +528,12 @@ primitive-element candidate `theta + c * alpha`, with `c = 0` returning
 `extend? theta alpha` is the bounded primitive-element search: it tests
 `choose(degree theta * degree alpha, 2) + 1` signed shifts and keeps a
 maximum-degree candidate, which generates the compositum even when the two
-fields overlap. `extendShift?` is the same search retaining the producing
-shift (the form the tower's flattening recovery needs), and
-`extendShiftStep` is its single fold step, exposed so consumers can interleave
-the search with their own early exits. `primitive?` folds `extend?` over the
-nonzero entries of a coefficient array.
+fields overlap. It is the value projection of `extendShift?`, so both APIs
+share one search retaining the producing shift (the form the tower's
+flattening recovery needs). `extendShiftStep` is `extendShift?`'s single fold
+step, exposed so consumers can interleave the search with their own early
+exits. `primitive?` folds `extend?` over the nonzero entries of a coefficient
+array.
 
 `powers? gamma last` returns the checked canonical powers
 `1, gamma, ..., gamma^last`. `trace? ambient a` is the field trace of `a`
@@ -472,6 +558,8 @@ for diagnostics and staged proofs.
 `AlgebraicNumber` has canonical zero `p = X`, so it supplies the `Inhabited`
 fallback used by exactification. `RootSet.all` is the loud fallback for the two
 total root wrappers; their `_isSome` theorems make it unreachable.
+`ZPoly.algebraicRoots` falls back to the empty array, and
+`algebraicRoots?_isSome` makes that branch unreachable too.
 
 ## File organisation
 
@@ -485,6 +573,7 @@ HexNumberField/
   Disambiguate.lean   : candidate bounds and certified selection
   AlgebraicPoly.lean  : semantic coefficient-polynomial representation
   Roots.lean          : fixed-field and algebraic-coefficient root APIs
+  IntegerRoots.lean   : roots of integer polynomials, reality test, display
 ```
 
 Conformance and benchmark drivers live in the shared `conformance/` and
@@ -495,7 +584,11 @@ Conformance and benchmark drivers live in the shared `conformance/` and
 - *core*: at least three cases per public operation, including `√2 + √2`,
   `√2 * √2`, `√2 + (-√2)`, inversion of zero, equal values represented by
   different nonminimal polynomials, an enclosing polynomial with irrelevant
-  factors, repeated input roots, and a conjugate-embedding impostor.
+  factors, repeated input roots, and a conjugate-embedding impostor; for
+  `algebraicRoots`, `X² - 2` (order `-√2, √2`), `(X² - 2)² (X + 3)`
+  (multiplicity dropped, `-3` first), `X³ - 2` (one real root first, then
+  the conjugate pair), and the zero, constant, and `X` polynomials; for
+  `isReal`, a real root, a nonreal root, and zero.
 - *ci*: deterministic small-degree fixtures checked by cypari2. Use
   python-flint independently for integer resultants, factorization, and certified
   complex-root balls.
@@ -506,20 +599,127 @@ oracle's independently computed decomposition with Lean's finite output.
 
 ## Complexity and Phase 4 budgets
 
+All advertised `HexNumberField` operations are Mathlib-free executable
+computations and therefore use the compiled Phase-4 evidence track; the
+library owns no elaboration, tactic, emitted-proof, or kernel-checking surface.
+Grouped constant-time accessors and total wrappers remain on that same track.
+The performance report's
+[current inventory](https://github.com/kim-em/hex-dev/blob/main/reports/hex-number-field-performance.md#track-assignment-re-audit)
+records the measurements implementing this assignment.
+
 - Fixed-field arithmetic has the existing dense-polynomial costs; a compiled
   degree-10 field operation remains capped at 100 ms on the reference host.
+- Fixed-field inversion performs `O(n²)` rational coefficient operations.
+  Monic remainder normalization keeps numerator and denominator widths within
+  the `O(n log n)` subresultant/Hadamard bound, so inversion remains
+  `O(n³ log n)` in the conservative linear-bit-cost model. The controlled
+  bounded-height benchmark family exhibits linear coefficient widths across
+  its registered schedule, giving a cubic aggregate linear-bit proxy; rounding
+  coefficient components to machine limbs contributes a quadratic lower-order
+  term. That expected-work registration does not weaken this worst-case
+  contract.
 - A lazy binary operation has eliminant degree at most
   `deg(a.p) * deg(b.p)`. Its ceiling is the measured resultant cost plus the
   existing HexRoots ceiling at that eliminant degree. Do not promise a faster
   end-to-end time than root isolation itself.
-- Degree-product at most 20 is the largest merge-facing lazy arithmetic class.
-  Larger cases are local until new measurements justify promotion.
+- Degree-product 20 is the largest studied merge-facing lazy arithmetic class,
+  but the merge-gating end-to-end regression uses the degree-product-12 input
+  below. The former sweep through 20 is retained as report evidence: its upper
+  rungs are too slow for smoke verification, and no honest one-parameter model
+  is available for them. Larger cases remain local until new measurements
+  justify promotion.
+- Isolation-dominated end-to-end regressions use canonical fixed inputs rather
+  than an asymptotic claim. On the reference host, lazy addition of the selected
+  roots of `X^6 - 2` and `X^2 - 3` must complete under 12 seconds; its
+  square-free sum eliminant has degree 12,
+  `coeffAbsMax = 1998`, coefficient bit height 11, and isolation target 186.
+  `AlgebraicPoly.roots?` on the controlled dense degree-6 polynomial with one
+  `√2` coefficient must complete under 15 seconds; its single square-free norm
+  eliminant has degree 12,
+  `coeffAbsMax = 366720`, coefficient bit height 19, and isolation target 274.
+  `QAdjoin.roots?` on `g² * (X - 1)` over `ℚ(√2)`, with `g` the controlled
+  dense degree-6 repeated component, must complete under 20 seconds; its
+  square-free norm eliminant has degree 12, `coeffAbsMax = 45480960`,
+  coefficient bit height 26, and isolation target 351.
+  These project-internal canonical inputs come from the shared `n = 6` rung of
+  the former schedules. Full timing runs check the ceilings; merge-gating
+  smoke verification checks the result hashes. The measured reference timings
+  live in the [performance report](https://github.com/kim-em/hex-dev/blob/main/reports/hex-number-field-performance.md).
+  None of the registrations makes a one-parameter scaling claim.
 - Exactification adds one Berlekamp-Zassenhaus factorization and factor-root
-  selection. Root APIs add Yun decomposition and one norm eliminant per
-  squarefree component.
+  selection. Root APIs add Yun decomposition, one norm eliminant, and one
+  shared double-resultant evaluation eliminant per squarefree component. The
+  latter has degree at most the product of the defining-polynomial and norm-
+  eliminant degrees and is not itself root-isolated.
 
 Phase 4 records separate timings for eliminant construction, isolation,
 disambiguation, and exactification so regressions are attributable.
+
+The required exactification input families are:
+
+- `exactification-selection`: the fixed enclosing polynomial
+  `(X^8 - 2)(X + 3)`, with the chosen root pinned to `X^8 - 2`, records
+  multiple-candidate selection and canonical re-isolation without treating
+  the easy enclosing factorization as scaling evidence;
+- `exactification-certification`: fixed degree-eight certification cases use
+  `X^8 - 2` inside `(X^8 - 2)(X + 3)`, pinned to the nonlinear factor, to time
+  `AlgebraicRoot.exactFactor?`, and the same candidate in the public
+  `AlgebraicNumber.canonicalRep?` phase. The enclosing polynomial has degree 9,
+  `coeffAbsMax = 6`, coefficient bit height 3, and certificate precision 77;
+  the candidate has degree 8, `coeffAbsMax = 2`, coefficient bit height 2, and
+  certificate precision 53. Their zero-grace whole-child budgets are 2 seconds
+  and 1.1 seconds respectively; and
+- `exactification-factorization`: the fixed end-to-end `exact?` case is the
+  first root of `∏ p∈{2,3,5,7,11,13}, (X² - p)`, the top completed rung of
+  the archived growing-factor-count sweep. It has degree 12,
+  `coeffAbsMax = 40361`, coefficient bit height 16, and certificate precision
+  241. Its zero-grace whole-child budget is 200 ms, including a 20 ms timed
+  batch after one untimed warmup.
+
+The certification and factorization sweeps are archived diagnostic evidence,
+not current parametric registrations. Inclusive profiling attributes the
+certification cases to root isolation (more than 95% inclusive) and the
+end-to-end case primarily to isolation (about 77%), with factorization only
+about 18%. The published BHKS bound therefore does not cover the controlling
+end-to-end phase, while the published BSSY bound concerns a different
+isolation algorithm. These three registrations are fixed absolute-budget
+checks and make no one-parameter scaling claim. Their static certificates are
+checked against the archived family shapes in the benchmark source; full
+timing runs enforce the budgets and merge-gating verification checks both the
+output polynomial and canonical isolating square.
+
+## External comparators
+
+**PARI/GP via cypari2** (https://pari.math.u-bordeaux.fr/, driven through
+the cypari2 binding, the same binding the conformance oracles use) —
+**informational**, scoped to the fixed-field arithmetic bench targets.
+PARI's t_POLMOD arithmetic (`Mod(a, m) * Mod(b, m)` and `Mod(a, m)^(-1)`)
+is the callable unit surface computing exactly `QAdjoin` multiplication and
+extended-gcd inversion in `ℚ[x]/(m)`. It is wired as a persistent-subprocess
+process call (`scripts/oracle/pari_bench_driver.py`,
+`Hex/BenchOracle/Pari.lean`) with per-rung fixed Lean/PARI registration
+pairs on identical deterministic inputs, joined on the identical reduced
+rational coefficient hash. PARI is a mature optimized C library, so the
+constant-factor gap is structural rather than algorithmic; the ratio is
+recorded for orientation and does not gate Phase 4.
+
+Absence declarations, all with reason
+**no-comparable-surface-in-named-comparator**:
+
+- *Factorization-lazy and canonical arithmetic* (`AlgebraicRoot.add?` and
+  friends, `AlgebraicNumber` arithmetic): PARI has no certified lazy
+  algebraic-number type; its floating `t_COMPLEX`/`algdep` workflow does not
+  expose "combine two isolated algebraic numbers into a certified isolated
+  result" as a callable unit.
+- *Exactification* (`AlgebraicRoot.exact?`): PARI exposes rational
+  polynomial factorization (already the BZ dependency's comparator surface)
+  but no unit function selecting and certifying the minimal polynomial of a
+  root given an isolating region.
+- *Root APIs* (`QAdjoin.roots?`, `AlgebraicPoly.roots?`): PARI's
+  `nfroots`/`nffactor` return only the roots lying inside the number field,
+  and `polroots` returns uncertified floating approximations; no PARI unit
+  surface produces the certified complete complex root multiset with
+  isolation data that these APIs return.
 
 ## References
 
