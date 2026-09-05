@@ -9,22 +9,22 @@ leanOptions = [
 [[require]]
 name = "HexRoots"
 git = "https://github.com/leanprover/hex-roots.git"
-rev = "5de271feb738cd92d96b8140ba7a9bac2f245d3d"
+rev = "1cbee8873adc3c6587a00aa288f675be6d105818"
 
 [[require]]
 name = "HexRowReduce"
 git = "https://github.com/leanprover/hex-row-reduce.git"
-rev = "967216591082d290bc3f9e1b7405effd910bdef9"
+rev = "7550b5334bea67cba65c9a96a87d24557090784f"
 
 [[require]]
 name = "HexResultant"
 git = "https://github.com/leanprover/hex-resultant.git"
-rev = "73847eaaf06e829a7bad6bff02cd95b1e75f8707"
+rev = "449bea55585ac61e8a8cbd6ef5b0c8625283beff"
 
 [[require]]
 name = "HexBerlekampZassenhaus"
 git = "https://github.com/leanprover/hex-berlekamp-zassenhaus.git"
-rev = "a75e874fc96b8e87916c6026a8e7cabcf7a99447"
+rev = "5b59d167f5bac139c2bf6f7a654476881314ff23"
 
 [[require]]
 name = "batteries"
