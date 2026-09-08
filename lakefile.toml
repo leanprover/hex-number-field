@@ -9,22 +9,22 @@ leanOptions = [
 [[require]]
 name = "HexRoots"
 git = "https://github.com/leanprover/hex-roots.git"
-rev = "v0.2.0"
+rev = "v0.3.0"
 
 [[require]]
 name = "HexRowReduce"
 git = "https://github.com/leanprover/hex-row-reduce.git"
-rev = "v0.2.0"
+rev = "v0.3.0"
 
 [[require]]
 name = "HexResultant"
 git = "https://github.com/leanprover/hex-resultant.git"
-rev = "v0.2.0"
+rev = "v0.3.0"
 
 [[require]]
 name = "HexBerlekampZassenhaus"
 git = "https://github.com/leanprover/hex-berlekamp-zassenhaus.git"
-rev = "v0.2.0"
+rev = "v0.3.0"
 
 [[require]]
 name = "batteries"
