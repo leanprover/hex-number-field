@@ -8,15 +8,16 @@ module
 
 public import HexNumberField.IntegerRoots
 public import HexNumberField.Roots
+public import HexNumberField.Interval
 
 public section
 
 /-!
-Exact primitives on canonical algebraic numbers that only need the stored
-isolations: the imaginary unit, complex conjugation, and the exact order on
-real numbers. Each works at a fixed precision derived from `mahlerPrec`, at
-which the approximation balls of two distinct roots of one polynomial are
-disjoint, so no API here refines without bound.
+Exact primitives on canonical algebraic numbers: the imaginary unit, real
+comparison, distances, and nearest-root selection. Real comparison first uses
+stored isolations, then bounded geometric refinement up to a precision derived
+from the product polynomial's separation bound. Inconclusive refinement uses
+the exact comparison at fixed separation precision; no API refines without bound.
 -/
 
 namespace Hex.AlgebraicNumber
@@ -32,7 +33,7 @@ def separationPrec (p : ZPoly) : Int :=
 the upper half plane. -/
 @[expose]
 def I : AlgebraicNumber :=
-  ((ZPoly.algebraicRoots #p[1, 0, 1]).find? fun a => 0 < a.rep.1.square.im).getD
+  ((ZPoly.algebraicRoots #p[1, 0, 1]).find? fun a => decide (a.side = .upper)).getD
     (Hex.panicWith 0 "AlgebraicNumber.I: imaginary unit not found")
 
 /-- The mirror image of a ball in the real axis. -/
@@ -40,29 +41,30 @@ def I : AlgebraicNumber :=
 def mirrorBall (b : DyadicComplexBall) : DyadicComplexBall :=
   { b with im := -b.im }
 
-/-- Complex conjugation. A real number is its own conjugate. Otherwise the
-conjugate is a root of the same minimal polynomial, and at `separationPrec`
-it is the unique root whose approximation ball meets the mirror image of this
-number's ball. -/
-@[expose]
-def conj (a : AlgebraicNumber) : AlgebraicNumber :=
-  if a.isReal then a
-  else
-    let prec := separationPrec a.p
-    let mirror := mirrorBall (a.approx prec)
-    ((ZPoly.algebraicRoots a.p).find? fun c => (c.approx prec).meets mirror).getD
-      (Hex.panicWith 0 "AlgebraicNumber.conj: conjugate root not found")
-
 /-- Exact comparison of two real algebraic numbers. Equal numbers compare
 equal; distinct ones are distinct roots of the product of their minimal
 polynomials, whose approximation balls at `separationPrec` of that product are
 disjoint, so the order of the ball centres is the order of the numbers. -/
 @[expose]
-def realCompare (a b : AlgebraicNumber) : Ordering :=
+def realCompareExact (a b : AlgebraicNumber) : Ordering :=
   if a == b then .eq
   else
     let prec := separationPrec (a.p * b.p)
     if (a.approx prec).re < (b.approx prec).re then .lt else .gt
+
+/-- Exact real order with stored-interval rejection and bounded geometric refinement.
+The product polynomial is constructed only when stored intervals overlap. -/
+@[expose] def realCompare (a b : AlgebraicNumber) : Ordering :=
+  if a == b then .eq else
+  match Interval.realOrder? a.rep.1.square b.rep.1.square with
+  | some result => result
+  | none =>
+    let cap := separationPrec (a.p * b.p) + 1
+    let start := max 1 (min a.rep.1.square.prec b.rep.1.square.prec)
+    let schedule := Interval.targets cap ((cap - start).toNat + 1) start
+    match Interval.search Interval.realOrder? schedule a.rep b.rep with
+    | some result => result
+    | none => realCompareExact a b
 
 end Hex.AlgebraicNumber
 
@@ -167,12 +169,21 @@ namespace AlgebraicNumber
 
 namespace Display
 
+/-- The unsigned scaled integer used to print a truncated decimal. -/
+@[expose] def decimalNumerator (q : Rat) (digits : Nat) : Nat :=
+  (q.num.natAbs * 10 ^ digits) / q.den
+
+/-- The exact rational denoted by the decimal display helper. -/
+@[expose] def decimalValue (q : Rat) (digits : Nat) : Rat :=
+  let v : Rat := (decimalNumerator q digits : Rat) / (10 ^ digits : Nat)
+  if q.num < 0 then -v else v
+
 /-- `q` truncated toward zero to `digits` decimal places, as a Lean literal:
 an integer when the fraction is zero, otherwise `d.ddd`, negatives in
-parentheses. A display helper; it carries no contract. -/
+parentheses. Its rational value is `decimalValue q digits`. -/
 def decimal (q : Rat) (digits : Nat) : String :=
   let scale : Nat := 10 ^ digits
-  let n : Nat := (q.num.natAbs * scale) / q.den
+  let n : Nat := decimalNumerator q digits
   let whole := n / scale
   let frac := n % scale
   let body :=
@@ -187,7 +198,7 @@ def decimal (q : Rat) (digits : Nat) : String :=
 root: `10 ^ -digits ≤ 2 ^ -mahlerPrec`, so the printed point is within
 `(1 + √2) · 2 ^ -mahlerPrec` of the root, less than half the root
 separation. -/
-def digitsFor (mahler : Nat) : Nat :=
+@[expose] def digitsFor (mahler : Nat) : Nat :=
   mahler / 3 + 1
 
 end Display
