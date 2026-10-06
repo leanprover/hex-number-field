@@ -7,24 +7,34 @@ leanOptions = [
 ]
 
 [[require]]
+name = "HexMatrix"
+git = "https://github.com/leanprover/hex-matrix.git"
+rev = "v0.7.0"
+
+[[require]]
+name = "HexPolyZ"
+git = "https://github.com/leanprover/hex-poly-z.git"
+rev = "v0.7.0"
+
+[[require]]
 name = "HexRoots"
 git = "https://github.com/leanprover/hex-roots.git"
-rev = "v0.6.0"
+rev = "v0.7.0"
 
 [[require]]
 name = "HexRowReduce"
 git = "https://github.com/leanprover/hex-row-reduce.git"
-rev = "v0.6.0"
-
-[[require]]
-name = "HexResultant"
-git = "https://github.com/leanprover/hex-resultant.git"
-rev = "v0.6.0"
+rev = "v0.7.0"
 
 [[require]]
 name = "HexBerlekampZassenhaus"
 git = "https://github.com/leanprover/hex-berlekamp-zassenhaus.git"
-rev = "v0.6.0"
+rev = "v0.7.0"
+
+[[require]]
+name = "HexResultant"
+git = "https://github.com/leanprover/hex-resultant.git"
+rev = "v0.7.0"
 
 [[require]]
 name = "batteries"

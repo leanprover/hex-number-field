@@ -134,8 +134,25 @@ The shipped representation is described here; the required
 [direct radical design](hex-number-field.md#local-canonicalization-and-representation-migration)
 replaces all-roots provenance with a deterministic local normal form in a
 coordinated constructor migration. Every smart constructor normalizes the primitive polynomial. Zero uses the
-fixed certified `zeroRep`. Other values use `rawRep?` to re-isolate the
-polynomial with the fixed strategy at `separationDepth`. The private record
+fixed certified `zeroRep`. Other values use the fixed isolation strategy at
+`separationDepth`. `rawRep?` performs that run; `rawRepIn?` reuses arrays whose
+proof equations identify exactly that deterministic run and refinement.
+`canonicalRepIn?` preserves orientation, and `ofNormalizedIn?` returns the
+complete result of `ofNormalized?`, including the same stored representative
+and every checked failure. `exactFactor?` uses this certified reuse after its
+candidate isolation. `withEliminant?` first tries direct selected-root
+certification; on success its ordinary consumer exactifies that root. On the
+global fallback it keeps the producer's certified run available to its immediate
+consumer without storing another root representation.
+`exactIn?` reuses that run when a factor equals the whole enclosing polynomial;
+proper factors are isolated separately. Canonical addition and multiplication,
+and checked common-field rational/addition/multiplication construction, use
+this fused producer/consumer path. Its two consumers agree with ordinary
+exactification by `withEliminant?_eq`, preserving canonical representatives
+and checked failures; total-operation equalities
+also retain their original fallback branches.
+These helpers retain the shipped all-roots provenance;
+they do not implement the forward local-canonicalization migration. The private record
 stores an `OrientedIsolation`: a canonical real or upper-half-plane `base`,
 and a `RootSide` tag (`real`, `upper`, or `lower`). The `valid` field proves
 that the base meets the real axis for `real`, or that its centre is above
@@ -334,6 +351,21 @@ def AlgebraicRoot.ofEliminant? (raw : ZPoly)
 
 `AlgebraicRoot.ofEliminant?` returns `none` unless normalization, root
 isolation, and the supplied operation ball identify one unique root.
+For nonlinear eliminants it first tries direct atom certification, rounding
+the operation ball's centre down to the `2^-(prec + 2)` grid and using a
+square at the eliminant's separation depth `prec`. The ball's radius plus
+the `GaussDyadic.hi` bound on the centre displacement must not exceed the
+square's half-width, and `certifyAtom?` plus `toRefined?` must accept.
+`AlgebraicRoot.isolateAt?` implements this checked attempt. Linear eliminants
+retain global isolation and canonical parent reuse. Otherwise
+the constructor retains the complete all-roots isolation and singleton
+selection route. Direct certification changes the lazy representative, not
+the canonical algebraic number obtained by exactification.
+
+```lean
+def AlgebraicRoot.isolateAt? (p : ZPoly) (ball : DyadicComplexBall) (prec : Int) :
+    Option (RefinedIsolation p)
+```
 
 `a.toQAdjoin` is the generator of `QAdjoin a`, and the argument-free
 `QAdjoin.toAlgebraicNumber?` and `QAdjoin.toAlgebraicNumber` are the general
@@ -341,7 +373,10 @@ forms applied with the number's own representative `a.rep`.
 `PolyQuot.toAlgebraicNumber?` materializes `1, a, a², ...` once with one
 fixed-field multiplication per new power, finds the first Krylov dependence by
 row reduction, clears denominators, normalizes the primitive part, and
-identifies the matching isolated root.
+identifies the matching isolated root. Its canonical constructor reuses this
+certified isolation run. `PolyQuot.toAlgebraicNumber?_eq` proves equality with
+the pipeline using `AlgebraicNumber.ofNormalized?`, including the stored
+canonical representative and every checked failure.
 
 `AlgebraicRoot.exact?` factors `a.p`, selects the unique irreducible factor whose
 isolated root agrees with `a.rep`, and returns that factor in canonical form.
@@ -362,9 +397,14 @@ def AlgebraicRoot.add? (a b : AlgebraicRoot) : Option AlgebraicRoot
 def AlgebraicRoot.add  (a b : AlgebraicRoot) : AlgebraicRoot
 -- likewise sub, mul, div, and inv; neg is certificate-free
 
-def AlgebraicNumber.add (a b : AlgebraicNumber) : AlgebraicNumber :=
-  (a.toRoot.add b.toRoot).exact
--- likewise sub, mul, neg, inv, and div
+def AlgebraicNumber.add (a b : AlgebraicNumber) : AlgebraicNumber
+def AlgebraicNumber.mul (a b : AlgebraicNumber) : AlgebraicNumber
+-- Fused selection and exactification, with transient parent-isolation reuse.
+theorem AlgebraicNumber.add_eq (a b : AlgebraicNumber) :
+  AlgebraicNumber.add a b = (a.toRoot.add b.toRoot).exact
+theorem AlgebraicNumber.mul_eq (a b : AlgebraicNumber) :
+  AlgebraicNumber.mul a b = (a.toRoot.mul b.toRoot).exact
+-- sub, neg, inv, and div still use the lazy operation followed by exactification.
 ```
 
 - `neg` substitutes `-X` and reflects the isolation.
@@ -398,7 +438,12 @@ resultIsolationPrec(e) = separationDepth(e).
 
 Refine the operation ball and candidate isolations to this precision. The
 HexRoots separation theorem makes distinct candidates disjoint, so exactly one
-candidate isolation meets the operation ball. This path does not need a second
+candidate isolation meets the operation ball. The direct path instead certifies
+one square containing the operation ball, including the checked rounding
+displacement. Its separation precision ensures
+that the enclosed semantic root is the certified root, including for Newton
+certificates whose unique-root region is the square rather than its disc.
+The all-roots path remains the total fallback. Neither path needs a second
 eliminant or the Stage 2 resultant value theorem.
 
 Candidate isolations use `resultIsolationPrec(e)` itself. The operand balls use
@@ -593,6 +638,231 @@ the reference centre comparison at `separationPrec (a.p * b.p)`.
 The companion proves every successful interval decision and the complete
 operation agree with the order of the real parts. Canonical data is unchanged.
 
+## Real sign and comparison
+
+These new operations serve the
+[real-algebraic comparison contract](../../SPEC/Libraries/hex-real-algebraic.md#exact-comparison-strategies).
+`realCompare` and `realCompareExact` retain their existing definitions and
+correctness theorems. The declarations below are design obligations; they do
+not assert that the new sign algorithms or their proofs are implemented.
+They depend downward on `hex-real-roots` for Sturm/Tarski computation and on
+`hex-real-roots-mathlib` for its proofs. Neither dependency imports number
+fields or RCF. Reuse RCF's recurrence-checking design without importing
+`HexRCF` into a computational library.
+
+### Contracts, domains, and finite refinement
+
+Reuse the existing `AlgebraicRoot.isReal`, defined by the stored square's
+`meetsRealAxis` test in `IntegerRoots.lean`. Its rounded `radiusHi` bound is
+already covered by `HexRootsMathlib.RefinedIsolation.meetsRealAxis_iff` in
+`Conjugate.lean`; do not redefine the predicate or change the orientation tags.
+Distinct conjugate roots cannot pass this test; no factorization is needed.
+New lazy checked `compare?` rejects either nonreal input and returns `none` on certification
+failure. The total `compare` takes proofs that both `isReal` tests are true.
+Its `.eq` panic fallback is **unreachable-by-pipeline-invariant**, discharged
+by `compare?_isSome` for those hypotheses; it must never absorb nonreal input.
+Apply the same checked/total convention to lazy sign, canonical point, and
+fixed-field sign operations, using the operand's stored reality proof (the
+canonical generator's proof for fixed-field elements). Name the corresponding `_isSome` theorem for each checked implementation:
+`compareRat?_isSome`, `compareDyadic?_isSome`, `sign?_isSome`,
+`signTarski?_isSome`, `signApprox?_isSome`, `compareTarski?_isSome`, and
+`compareApprox?_isSome`. Successful
+signs are in `{-1,0,1}`. This library owns the Mathlib-free helper
+`Hex.orderOfSign (s : Int) : Ordering := compare s 0`, reused by the real and
+tower consumers.
+
+Every call to `rep.refineTo? t` uses the existing finite budget
+
+```text
+stopDepth p t = max t (separationDepth p) + 8
+fuelFor p t start = (stopDepth p t - start).toNat
+                 + (stopDepth p t - t).toNat + 1.
+```
+
+These are loop bounds, not bit-complexity claims. Root isolation uses this
+same budget from the Cauchy worklist's computable starting precision.
+Polynomial arithmetic, pseudo-division, coefficient folds and resultant
+construction have finite degree/array bounds; coefficient bit lengths still
+contribute to their cost. No sign API waits for a semantic inequality to make
+an unbounded refinement loop terminate.
+
+### Real isolating intervals and point comparison
+
+A refined complex disc containing a real selected root supplies a real
+isolating interval without refinement. For its square set `h = 2^(-prec)`
+and use `I = (re - 2*h, re + 2*h]`. The selected root is strictly inside
+because its coordinate error is at most `sqrt(2)*h`. Any other root in `I`
+would be within `(2+sqrt(2))*h` of it, contradicting the existing Mahler
+separation `> 4*sqrt(2)*h`. In particular neither endpoint is a root.
+Require `realInterval_spec` proving these statements, including the
+`sturmCount = 1` bridge to `RealRootIsolation`; this bridge is new, not an
+assumed coercion from complex discs. The interval is disposable query data,
+not a change to the stored representative. It also supplies the root-free
+endpoints required by the Tarski query below.
+
+`AlgebraicNumber.compareRat a q` compares the selected real root to a rational
+point. Reuse the derivative Sturm chain of `a.p`. If `q ≤ I.lower`, return
+`.gt`; if `I.upper < q`, return `.lt`. Otherwise form the single prefix count
+`N = V(I.lower) - V(q)` on `(I.lower,q]`. If `N=0`, return `.gt`. If `N=1`,
+return `.eq` exactly when `a.p(q)=0`, and `.lt` otherwise. Other counts are
+certification failure, excluded by `realInterval_spec`. At the included upper
+endpoint, the same rule works; exact equality is tested only inside the
+selected interval. The sign of `p(q)` alone does not identify which root is
+being compared.
+
+Use `hex-real-roots`' new `sturmVarAtRat` and mixed rational-endpoint count
+correspondence. For `q=u/v` with `v>0`, evaluate signs via the integer
+homogeneous Horner value `v^deg(p) * p(u/v)`, and do the same for every chain entry. Dyadic points
+use `evalDyadic` directly. `compareDyadic` specializes `compareRat` without
+converting an arbitrary rational to an inexact dyadic. One derivative chain
+has at most `deg p + 1` entries, strict-degree pseudo-remainder descent bounds
+its construction, and the prefix count uses two finite chain evaluations
+(the lower variation may be cached). There is no root refinement or
+factorization. This extracts the algorithm of
+[RCF endpoint classification](../../HexRCF/SeparationCheck.lean).
+
+The companion proves `compareRat_eq` and `compareDyadic_eq`, respectively
+`a.compareRat q = a.realCompare (ofRat q)` and
+`a.compareDyadic q = a.realCompare (ofRat q.toRat)`, with the reality proof
+arguments understood. Exact rational roots, including zero, return `.eq`.
+
+### Lazy comparison and the precision invariant
+
+`AlgebraicRoot.compare r s` computes the lazy difference `d` through `sub?`,
+then its sign, never exactifying either operand. `AlgebraicRoot.sign_eq`
+states `orderOfSign (sign d) = d.exact.realCompare 0`; `compare_eq` states
+`r.compare s = r.exact.realCompare s.exact`, with real-input hypotheses.
+Both compose the existing subtraction, exactification and zero-test semantic
+bridges with the following new sign proof.
+
+1. If `d.isZero`, return zero. This handles equal values represented by
+   different squarefree polynomials and different isolation widths.
+2. For `p=d.p` of degree one, return the sign of `-p.coeff 0`. Its leading
+   coefficient is positive, so this is exact even if the disc centre is zero.
+3. Otherwise ensure `rep.square.prec ≥ separationDepth p`, using at most one
+   `refineTo?` call if necessary and retaining its same-root proof. Read the
+   strict sign of the real centre only after establishing `signDepth_spec`
+   below. A zero centre in this branch is a failed invariant, not equality.
+
+The required precision is an invariant of the **representative used by the
+sign operation**, not of every arbitrary `AlgebraicRoot`. The public structure
+and `ofRefined` accept `RefinedIsolation`, whose field proves only
+`mahlerPrec p ≤ prec`. Canonical `toRoot` retains the canonical constructor's
+stronger depth; the public lazy constructors are the reason for the guard.
+Do not strengthen their type silently or claim every constructor enforces
+`separationDepth`. `ofEliminant?`, used by `sub?`, does request that depth;
+require `ofEliminant_prec` to expose the successful driver's precision
+postcondition. Thus an ordinary subtraction result needs no further
+refinement, while a general public `sign` call performs the bounded guard in
+step 3. Negation preserves the polynomial's separation depth and precision.
+
+`signDepth_spec` must prove, for a real nonzero selected root at this depth,
+that its real centre is nonzero and has its sign. For `n=deg p ≥ 2`,
+`H=coeffAbsMax p ≥ 1` and `L=ceilLog2 H`, the formula gives
+`separationDepth p ≥ L+12`. If `p(0) ≠ 0`, reciprocal Cauchy gives
+`|d| ≥ 1/(1+H) ≥ 2^(-(L+1))`; the disc radius is less than
+`2^(1-prec)`, which is strictly smaller than this lower bound. If `p(0)=0`,
+zero is a distinct root, and separation exceeds four disc radii; hence a real
+centre of the wrong sign would put `|d|` within one radius of zero, a
+contradiction. Equivalently the reciprocal bound can be applied after removing
+all powers of `X`. The proof must carry the selected-root reality and nonzero
+hypotheses; `!isZero` alone is not a geometric zero-exclusion certificate.
+
+For a linear polynomial, `mahlerPrec=3` and `separationDepth=12`, independently
+of height. The inputs `±2^-k` at `k=20,50,100` can have centre zero, which is
+why step 2 is mandatory. Subtracting `(a±2^-k)-a` for real quadratic `a`
+instead exercises the higher-degree sign bound for close operands: its lazy
+eliminant retains conjugate differences and need not be linear. The two
+families test different branches and both must return the strict order.
+
+Cost: one resultant of input degree product at most `deg(r.p)*deg(s.p)`,
+primitive squarefree normalization, one complete isolation of that eliminant,
+operand refinement to the operation-ball precision, and a constant number of
+coefficient/disc sign tests. The subtraction evaluator requests
+`separationDepth p + 4` on each operand. The general sign guard adds at most
+one bounded refinement; the `sub?` postcondition eliminates that cost here.
+This avoids two Berlekamp–Zassenhaus factorizations, and is a candidate win for
+one-off comparisons with costly irrelevant factors. Large degree products and
+repeated queries against already exactified operands can reverse the tradeoff;
+the comparison benchmarks decide it. Degree-one coefficient sign and the
+certified higher-degree centre rule preserve the one-resultant/one-isolation
+claim. A uniform reciprocal-Cauchy refinement strategy is an optional measured
+alternative, with its extra refinement charged explicitly.
+
+### Fixed-field sign
+
+For real canonical `a` and `f : QAdjoin a`, coefficients are already reduced
+modulo the irreducible `p=a.p`. Test coordinate zero first: this is exactly
+zero in the field, and no numerical threshold defines equality. A nonzero
+rational constant returns the sign of its numerator directly in both
+strategies. All strategies work in the chosen embedding of `a`, not across
+every conjugate.
+
+`QAdjoin.signTarski f` clears rational denominators with a positive common
+multiple `D`, obtaining `F=D*f.coeffs : ZPoly`, and calls
+`ZPoly.tarskiQuery p F I` on the root-free `realInterval` above. Its result is
+in `{-1,0,1}` because `I` contains exactly one root; the positive scale means
+it is the sign of `f(a)`. The low-level query and new generalized replay are
+specified by [hex-real-roots](../../HexRealRoots/SPEC/hex-real-roots.md#tarski-queries).
+There is no resultant, factorization or refinement in this strategy: one
+signed pseudo-remainder chain and two exact endpoint evaluations suffice.
+The query also handles zero `F` directly, so correctness does not depend on
+keeping the early coordinate-zero optimization.
+
+`QAdjoin.signApprox f` uses the nonzero evaluation eliminant
+`E(T) = Res_X(p(X), D*T-F(X))`. This contains the values `f(α)` at every
+conjugate `α` of `a`; normalization must not scale the **value** by `D`.
+Set `E₀ = E.normalizeEval` (remove powers of `X` and content) and
+`B = 1 + coeffAbsMax E₀`. Every nonzero evaluation has absolute value at
+least `1/B`. The eliminant is nonzero even for the zero element; the early
+coordinate test handles that case before removing zero roots.
+
+Two finite interval evaluators satisfy this contract. `signApprox` may use
+`PolyQuot.approx`, whose guard bits account for Horner amplification before
+the requested output precision, or the direct majorant-first evaluator below.
+Either may first read the stored enclosure and try a fixed refinement precision.
+Each early return requires an enclosure wholly on one side of zero. These
+probes do not replace the eliminant-derived endpoint or its success proof.
+
+For the direct evaluator, set
+`C = Disambiguation.evalMajorant f.coeffs PolyQuot.ratAbsCeil p`.
+At input precision `k`, refine the generator to `k+1`, round each rational
+coefficient to a dyadic ball of radius at most `2^-k`, and use `evalRatBall`
+with Horner ball arithmetic. Require `signBall_bound`: the ball contains the
+selected real value and has radius at most `C*2^-k`. The generic majorant
+recurrence is existing code; its specialization to this sign evaluator is a
+new theorem. Use the finite schedule `0 .. P`, where
+
+```text
+P = evalDisambiguationLimit E C = ceilLog2 (2 * B * max 1 C) + 2.
+```
+
+At `P`, the radius is at most `1/(8B)`, strictly below `1/(3B)`; the real
+centre has the correct strict sign for nonzero `f`. Earlier success requires
+an enclosure wholly on one side of zero, never just a nonzero centre.
+The schedule has at most `P+1` evaluations, each using the explicit refinement
+fuel above; a single evaluation at `P` is also a valid benchmark arm. The
+existing `PolyQuot.approx` and `approx_radius` provide an alternative baseline:
+request output precision at least `ceilLog2 (3*B) + 1`, including that API's
+internal `approxGuardBits`. In particular, `evalDisambiguationLimit E 1` is
+sufficient: the majorant is one for the guarded output-radius bound, not for
+unguarded Horner evaluation. The majorant-first arm is specified to compare the direct
+input-precision budget with those existing guard bits; it is not needed merely
+to obtain a sign algorithm. Phase 4 must count the actual generator precision
+and setup of each arm before claiming the new route saves work.
+`signApprox?_isSome` proves endpoint success. Its cost includes the evaluation
+resultant and all Horner/refinement calls, not merely reading the last centre.
+
+Require `signTarski_eq` and `signApprox_eq`:
+`orderOfSign (signStrategy f) = f.toAlgebraicNumber.realCompare 0`.
+Also require `compareTarski_eq` and `compareApprox_eq` for sign of the reduced
+difference `f-g`, equating each result with
+`f.toAlgebraicNumber.realCompare g.toAlgebraicNumber`. The right-hand
+conversions are reference semantics, not part of the executable strategies.
+Expose both strategies; select defaults only from the consumer SPEC's
+Phase-4 degree/height evidence. Reduced coordinate zero, rational constants,
+and equal fixed-field operands require no refinement in either strategy.
+
 ## The nearest root
 
 ```lean
@@ -676,6 +946,8 @@ def powers? (gamma : AlgebraicNumber) (last : Nat) :
 def trace? (ambient : Nat) (a : AlgebraicNumber) : Option Rat
 def coordinates? (gamma a : AlgebraicNumber)
     (powers : Array AlgebraicNumber) : Option (QAdjoin gamma)
+def presentationAt? (generator : AlgebraicNumber) (coefficients : Array AlgebraicNumber) :
+    Option Presentation
 def presentation? (coefficients : Array AlgebraicNumber) :
     Option Presentation
 ```
@@ -704,9 +976,21 @@ and returns `(ambient / m)` times the conjugate sum
 power-basis coordinate of `a` through the nondegenerate trace pairing (Gram
 matrix of power traces against the traces of `a * gamma^k`), then validates
 the recovered coordinate by canonical algebraic equality before returning it.
-`presentation?` composes the above: find a primitive generator, take its
-powers up to `2 * degree - 2`, embed every coefficient, and return the
-validated fixed-field `Presentation`.
+`presentationAt? gamma coefficients` shares the proposed generator's powers
+up to `2 * degree gamma - 2` and checks every coefficient through
+`coordinates?`. It returns a presentation only if all selected values are
+recovered exactly. `presentation?` first tries the first nonzero coefficient
+as generator through this check, first rejecting the proposal if any
+coefficient degree does not divide the generator degree. If it fails, `primitive?` supplies the
+generator for a second `presentationAt?` call. A proposal rejected after
+coordinate recovery adds at most one such checked presentation attempt to
+the unchanged primitive search and final coordinate phase. Empty and all-zero arrays
+return `none`; public root and collection APIs handle their separate zero
+conventions before calling this producer. When the first coefficient's field
+contains all coefficients, the old maximum-degree search retained that same
+first coefficient (shift zero wins degree ties), so the chosen generator is
+unchanged. The fallback retains the bounded primitive search and selected
+embedding checks.
 
 ## Totalization
 
@@ -821,12 +1105,13 @@ The required exactification input families are:
 
 - `exactification-selection`: the fixed enclosing polynomial
   `(X^8 - 2)(X + 3)`, with the chosen root pinned to `X^8 - 2`, records
-  multiple-candidate selection and canonical re-isolation without treating
+  multiple-candidate selection and canonical representative selection without treating
   the easy enclosing factorization as scaling evidence;
 - `exactification-certification`: fixed degree-eight certification cases use
   `X^8 - 2` inside `(X^8 - 2)(X + 3)`, pinned to the nonlinear factor, to time
-  `AlgebraicRoot.exactFactor?`, and the same candidate in the public
-  `AlgebraicNumber.canonicalRep?` phase. The enclosing polynomial has degree 9,
+  `AlgebraicRoot.exactFactor?`, whose canonical constructor now reuses that
+  certified candidate run, and the same candidate in the independently
+  callable public `AlgebraicNumber.canonicalRep?` phase. The enclosing polynomial has degree 9,
   `coeffAbsMax = 6`, coefficient bit height 3, and certificate precision 77;
   the candidate has degree 8, `coeffAbsMax = 2`, coefficient bit height 2, and
   certificate precision 53. Their zero-grace whole-child budgets are 2 seconds
@@ -853,8 +1138,8 @@ output polynomial and canonical isolating square.
 ## External comparators
 
 **PARI/GP via cypari2** (https://pari.math.u-bordeaux.fr/, driven through
-the cypari2 binding, the same binding the conformance oracles use) —
-**informational**, scoped to the fixed-field arithmetic bench targets.
+the cypari2 binding, the same binding the conformance oracles use),
+scoped to the fixed-field arithmetic bench targets.
 PARI's t_POLMOD arithmetic (`Mod(a, m) * Mod(b, m)` and `Mod(a, m)^(-1)`)
 is the callable unit surface computing exactly `PolyQuot` multiplication and
 extended-gcd inversion in `ℚ[x]/(m)`. It is wired as a persistent-subprocess
@@ -863,10 +1148,9 @@ process call (`scripts/oracle/pari_bench_driver.py`,
 pairs on identical deterministic inputs, joined on the identical reduced
 rational coefficient hash. PARI is a mature optimized C library, so the
 constant-factor gap is structural rather than algorithmic; the ratio is
-recorded for orientation and does not gate Phase 4.
+recorded for orientation only.
 
-Absence declarations, all with reason
-**no-comparable-surface-in-named-comparator**:
+PARI exposes no comparable callable unit for the other surfaces:
 
 - *Factorization-lazy and canonical arithmetic* (`AlgebraicRoot.add?` and
   friends, `AlgebraicNumber` arithmetic): PARI has no certified lazy
@@ -952,6 +1236,9 @@ def ofAlgebraics? (a : AlgebraicNumber) (bs : Array AlgebraicNumber) :
 structure Presentation where
   generator : AlgebraicNumber
   entries : Array (QAdjoin generator)
+def recoverShift? (theta alpha gamma : AlgebraicNumber) (shift : Int) :
+    Option (QAdjoin gamma × QAdjoin gamma)
+def fastPair? (theta alpha : AlgebraicNumber) : Option Presentation
 def common (bs : Array AlgebraicNumber) : Presentation
 end QAdjoin
 ```
@@ -995,9 +1282,14 @@ this branch away from the negative real axis, not unconditionally.
 `ofAlgebraics? a bs` shares the power table and preserves one option per input.
 `QAdjoin.common bs` returns a `Presentation` with one `generator` and an
 `entries : Array (QAdjoin generator)`, preserving input values, order and
-duplicates. Empty and all-zero inputs use generator zero. These wrappers
-reuse the existing certified primitive-element search and coordinate recovery;
-no independent field-search implementation is added.
+duplicates. Empty and all-zero inputs use generator zero. `recoverShift?`
+computes the linear gcd for a proposed generator `gamma = theta + shift * alpha`
+and accepts its coordinates only after exact comparison with both original
+algebraic numbers. The two-generator path tries shift one when its degree is
+the product of the input degrees; general cases use the existing certified
+primitive-element search and trace-based coordinate recovery. The tower
+flattening operation shares this checked linear-gcd recovery. There is no
+second field-search implementation.
 
 The real library owns `AlgebraicNumber.re`, `im`, and `ofReal`, with both
 projections returning `RealAlgebraicNumber`. It computes them through
@@ -1705,3 +1997,20 @@ closed evidence type. Update `libraries.yml`, Lake requirements, and the authori
 and edges actually exist. Existing release pins are not changed by a design.
 Manual acceptance requirements live in
 [HexManual](../../HexManual/README.md#direct-radical-design-requirements).
+
+## Checked fixed presentations
+
+`AlgebraicNumber.ofNormalized` accepts the same normalized polynomial,
+irreducibility, square-freeness and selected-root data as `ofNormalized?`,
+plus a proof that its result is present. It returns that canonical number
+with the defining polynomial stored directly; `ofNormalized_p` is
+reflexivity. Thus a `QAdjoin` literal can expose its polynomial coefficients
+without replaying root isolation in the kernel. The canonicality evidence
+and selected isolation are transported from the successful result, so the
+sealed-constructor invariant is preserved. The Mathlib companion's
+`AlgebraicNumber.ofNormalized?_isSome` discharges the success obligation.
+
+`ZPoly.toRatPoly` uses a coefficient-list specification for kernel reduction
+and its original array implementation through a proved `@[csimp]` equality.
+This lets fixed-presentation arithmetic reduce in entry-identification
+checks while preserving compiled arithmetic.
